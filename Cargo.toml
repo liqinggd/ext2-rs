@@ -1,0 +1,32 @@
+[package]
+name = "ext2-rs"
+version = "0.1.0"
+authors = ["Li Qing <geding.lq@antgroup.com>"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+default = ["libc"]
+sgx = ["sgx_types", "sgx_tstd", "sgx_trts", "sgx_libc"]
+
+[dependencies]
+rcore-fs = { path = "../sefs/rcore-fs" }
+pod = { git = "https://github.com/asterinas/pod", rev = "d7dba56" }
+inherit-methods-macro = { git = "https://github.com/asterinas/inherit-methods-macro", rev = "98f7e3e" }
+static_assertions = "1.1.0"
+log = "0.4.21"
+bitflags = "1.3"
+spin = "0.9.8"
+cfg-if = "1.0.0"
+lru = "0.8"
+bitvec = { version = "1.0", default-features = false, features = ["alloc"] }
+
+libc = { version = "0.2", optional = true }
+sgx_types = { path = "../rust-sgx-sdk/sgx_types", optional = true }
+sgx_tstd = { path = "../rust-sgx-sdk/sgx_tstd", optional = true, features = ["backtrace"] }
+sgx_trts = { path = "../rust-sgx-sdk/sgx_trts", optional = true }
+sgx_libc = { path = "../rust-sgx-sdk/sgx_libc", optional = true }
+
+[dev-dependencies]
+lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
