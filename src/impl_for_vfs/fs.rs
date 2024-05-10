@@ -13,6 +13,8 @@ impl vfs::FileSystem for Ext2 {
     fn sync(&self) -> vfs::Result<()> {
         self.sync_all_inodes()?;
         self.sync_metadata()?;
+
+        self.block_device().sync()?;
         Ok(())
     }
 

@@ -36,30 +36,46 @@ impl vfs::INode for Ext2Inode {
     }
 
     fn metadata(&self) -> vfs::Result<vfs::Metadata> {
+        let inode = self.ino();
+        let blk_size = BLOCK_SIZE;
+        let inner = self.inner.read();
+        let size = inner.file_size();
+        let blocks = size / BLOCK_SIZE;
+        let atime = inner.atime();
+        let mtime = inner.mtime();
+        let ctime = inner.ctime();
+        let type_ = inner.file_type();
+        let mode = inner.file_perm().bits();
+        let nlinks = inner.hard_links();
+        let uid = inner.uid();
+        let gid = inner.gid();
+
         Ok(vfs::Metadata {
             dev: 0,
-            inode: self.ino() as _,
-            size: self.file_size() as _,
-            blk_size: self.fs().super_block().block_size(),
-            blocks: self.blocks_count() as _,
-            atime: vfs::Timespec::from(self.atime()),
-            mtime: vfs::Timespec::from(self.mtime()),
-            ctime: vfs::Timespec::from(self.ctime()),
-            type_: vfs::FileType::from(self.file_type()),
-            mode: self.file_perm().bits(),
-            nlinks: self.hard_links() as _,
-            uid: self.uid() as _,
-            gid: self.gid() as _,
-            rdev: self.device_id().unwrap_or(0) as _,
+            inode: inode as _,
+            size: size as _,
+            blk_size,
+            blocks: blocks as _,
+            atime: vfs::Timespec::from(atime),
+            mtime: vfs::Timespec::from(atime),
+            ctime: vfs::Timespec::from(atime),
+            type_: vfs::FileType::from(type_),
+            mode,
+            nlinks: nlinks as _,
+            uid: uid as _,
+            gid: gid as _,
+            rdev: 0,
         })
     }
 
     fn set_metadata(&self, metadata: &vfs::Metadata) -> vfs::Result<()> {
-        self.set_file_perm(FilePerm::from_bits_truncate(metadata.mode));
-        self.set_uid(metadata.uid as u32);
-        self.set_gid(metadata.gid as u32);
-        self.set_atime(UnixTime::from(metadata.atime));
-        self.set_mtime(UnixTime::from(metadata.mtime));
+        let mut inner = self.inner.upgradeable_read().upgrade();
+
+        inner.set_file_perm(FilePerm::from_bits_truncate(metadata.mode));
+        inner.set_uid(metadata.uid as u32);
+        inner.set_gid(metadata.gid as u32);
+        inner.set_atime(UnixTime::from(metadata.atime));
+        inner.set_mtime(UnixTime::from(metadata.mtime));
         Ok(())
     }
 
@@ -162,7 +178,15 @@ impl From<FileType> for vfs::FileType {
 
 impl From<vfs::FileType> for FileType {
     fn from(type_: vfs::FileType) -> Self {
-        Self::try_from(type_ as u16).unwrap()
+        match type_ {
+            vfs::FileType::File => Self::File,
+            vfs::FileType::Dir => Self::Dir,
+            vfs::FileType::SymLink => Self::Symlink,
+            vfs::FileType::CharDevice => Self::Char,
+            vfs::FileType::BlockDevice => Self::Block,
+            vfs::FileType::NamedPipe => Self::Fifo,
+            vfs::FileType::Socket => Self::Socket,
+        }
     }
 }
 

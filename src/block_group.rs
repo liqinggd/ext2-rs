@@ -88,7 +88,7 @@ impl BlockGroup {
 
         // The slow path
         drop(inner);
-        let mut inner = self.inner.write();
+        let mut inner = self.inner.upgradeable_read().upgrade();
         if !inner.metadata.is_inode_allocated(inode_idx) {
             return Err(FsError::EntryNotFound);
         }
@@ -122,7 +122,7 @@ impl BlockGroup {
     ///
     /// If `inode_idx` has not been allocated before, then the method panics.
     pub fn insert_cache(&self, inode_idx: u32, inode: Arc<Inode>) {
-        let mut inner = self.inner.write();
+        let mut inner = self.inner.upgradeable_read().upgrade();
         assert!(inner.metadata.is_inode_allocated(inode_idx));
         inner.inode_cache.insert(inode_idx, inode);
     }
@@ -135,7 +135,11 @@ impl BlockGroup {
         }
 
         // The slow path
-        self.inner.write().metadata.alloc_inode(is_dir)
+        self.inner
+            .upgradeable_read()
+            .upgrade()
+            .metadata
+            .alloc_inode(is_dir)
     }
 
     /// Frees the allocated inode idx.
@@ -144,7 +148,7 @@ impl BlockGroup {
     ///
     /// If `inode_idx` has not been allocated before, then the method panics.
     pub fn free_inode(&self, inode_idx: u32, is_dir: bool) {
-        let mut inner = self.inner.write();
+        let mut inner = self.inner.upgradeable_read().upgrade();
         assert!(inner.metadata.is_inode_allocated(inode_idx));
 
         inner.metadata.free_inode(inode_idx, is_dir);
@@ -164,7 +168,11 @@ impl BlockGroup {
         }
 
         // The slow path
-        self.inner.write().metadata.alloc_blocks(count)
+        self.inner
+            .upgradeable_read()
+            .upgrade()
+            .metadata
+            .alloc_blocks(count)
     }
 
     /// Frees the consecutive range of allocated block indices.
@@ -178,7 +186,7 @@ impl BlockGroup {
             return;
         }
 
-        let mut inner = self.inner.write();
+        let mut inner = self.inner.upgradeable_read().upgrade();
         for idx in range.clone() {
             assert!(inner.metadata.is_block_allocated(idx));
         }
@@ -200,21 +208,21 @@ impl BlockGroup {
             return Ok(());
         }
 
-        let mut inner = self.inner.write();
+        let mut inner = self.inner.upgradeable_read().upgrade();
         let fs = self.fs();
         // Writes back the descriptor
         self.fs()
             .sync_group_descriptor(self.idx, &inner.metadata.descriptor)?;
 
         // Writes back the inode bitmap
-        fs.block_device().write_block(
-            inner.metadata.descriptor.inode_bitmap_bid as Bid,
+        fs.block_device().write_bytes(
+            inner.metadata.descriptor.inode_bitmap_bid as usize * BLOCK_SIZE,
             inner.metadata.inode_bitmap.as_bytes(),
         )?;
 
         // Writes back the block bitmap
-        fs.block_device().write_block(
-            inner.metadata.descriptor.block_bitmap_bid as Bid,
+        fs.block_device().write_bytes(
+            inner.metadata.descriptor.block_bitmap_bid as usize * BLOCK_SIZE,
             inner.metadata.block_bitmap.as_bytes(),
         )?;
 
@@ -230,7 +238,8 @@ impl BlockGroup {
         // Removes the inodes that is unused from the inode cache.
         let unused_inodes: Vec<Arc<Inode>> = self
             .inner
-            .write()
+            .upgradeable_read()
+            .upgrade()
             .inode_cache
             .drain_filter(|_, inode| Arc::strong_count(inode) == 1)
             .map(|(_, inode)| inode)

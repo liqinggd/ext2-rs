@@ -26,6 +26,7 @@
 #![feature(int_roundings)]
 #![feature(new_uninit)]
 #![feature(btree_drain_filter)]
+#![feature(let_chains)]
 #![allow(dead_code)]
 
 #[cfg(feature = "sgx")]
@@ -59,5 +60,6 @@ mod prelude;
 mod super_block;
 mod utils;
 
-// #[cfg(test)]
-// mod test;
+pub use bio::{Bid, BlockDevice, BlockDeviceExt};
+pub use rcore_fs::vfs::FsError;
+pub use utils::{TimeProvider, UnixTime};

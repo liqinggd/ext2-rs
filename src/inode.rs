@@ -23,8 +23,9 @@ pub const FAST_SYMLINK_MAX_LEN: usize = BLOCK_PTR_CNT * BID_SIZE;
 pub struct Inode {
     ino: u32,
     block_group_idx: usize,
-    inner: RwLock<InodeInner>,
+    pub(super) inner: RwLock<InodeInner>,
     fs: Weak<Ext2>,
+    lookup_cache: RwLock<HashMap<String, Arc<Inode>>>,
 }
 
 impl Inode {
@@ -39,6 +40,7 @@ impl Inode {
             block_group_idx,
             inner: RwLock::new(InodeInner::new(desc, weak_self.clone(), fs.clone())),
             fs,
+            lookup_cache: RwLock::new(HashMap::new()),
         })
     }
 
@@ -55,7 +57,7 @@ impl Inode {
     }
 
     pub fn resize(&self, new_size: usize) -> Result<()> {
-        let mut inner = self.inner.write();
+        let mut inner = self.inner.upgradeable_read().upgrade();
         if inner.file_type() != FileType::File {
             return Err(FsError::NotFile);
         }
@@ -77,7 +79,7 @@ impl Inode {
             return Err(FsError::NameTooLong);
         }
 
-        let mut inner = self.inner.write();
+        let inner = self.inner.read();
         if inner.file_type() != FileType::Dir {
             return Err(FsError::NotDir);
         }
@@ -87,6 +89,8 @@ impl Inode {
         if inner.get_entry(name, 0).is_some() {
             return Err(FsError::EntryExist);
         }
+        drop(inner);
+
         let inode = self
             .fs()
             .create_inode(self.block_group_idx, file_type, file_perm)?;
@@ -97,7 +101,12 @@ impl Inode {
         }
         let new_entry = DirEntry::new(inode.ino, name, file_type);
 
-        if let Err(e) = inner.append_entry(new_entry, 0) {
+        if let Err(e) = self
+            .inner
+            .upgradeable_read()
+            .upgrade()
+            .append_entry(new_entry, 0)
+        {
             self.fs().free_inode(inode.ino, is_dir).unwrap();
             return Err(e);
         }
@@ -107,6 +116,10 @@ impl Inode {
     pub fn lookup(&self, name: &str) -> Result<Arc<Self>> {
         if name.len() > MAX_FNAME_LEN {
             return Err(FsError::NameTooLong);
+        }
+
+        if let Some(inode) = self.lookup_cache.read().get(name) {
+            return Ok(inode.clone());
         }
 
         let ino = {
@@ -121,7 +134,13 @@ impl Inode {
             ino
         };
 
-        self.fs().lookup_inode(ino)
+        let inode = self.fs().lookup_inode(ino)?;
+
+        self.lookup_cache
+            .upgradeable_read()
+            .upgrade()
+            .insert(name.to_string(), inode.clone());
+        Ok(inode)
     }
 
     pub fn link(&self, inode: &Inode, name: &str) -> Result<()> {
@@ -129,7 +148,7 @@ impl Inode {
             return Err(FsError::NameTooLong);
         }
 
-        let mut inner = self.inner.write();
+        let mut inner = self.inner.upgradeable_read().upgrade();
         if inner.file_type() != FileType::Dir {
             return Err(FsError::NotDir);
         }
@@ -149,7 +168,7 @@ impl Inode {
         inner.append_entry(new_entry, 0)?;
         drop(inner);
 
-        inode.inner.write().inc_hard_links();
+        inode.inner.upgradeable_read().upgrade().inc_hard_links();
         Ok(())
     }
 
@@ -162,7 +181,7 @@ impl Inode {
         }
 
         let inode = {
-            let mut inner = self.inner.write();
+            let mut inner = self.inner.upgradeable_read().upgrade();
             if inner.file_type() != FileType::Dir {
                 return Err(FsError::NotDir);
             }
@@ -179,7 +198,7 @@ impl Inode {
             inode
         };
 
-        inode.inner.write().dec_hard_links();
+        inode.inner.upgradeable_read().upgrade().dec_hard_links();
         Ok(())
     }
 
@@ -231,7 +250,7 @@ impl Inode {
 
     /// Rename within its own directory.
     fn rename_within(&self, old_name: &str, new_name: &str) -> Result<()> {
-        let mut self_inner = self.inner.write();
+        let mut self_inner = self.inner.upgradeable_read().upgrade();
         if self_inner.file_type() != FileType::Dir {
             return Err(FsError::NotDir);
         }
@@ -322,7 +341,7 @@ impl Inode {
                 drop(self_inner);
                 drop(target_inner);
                 let src_inode = self.fs().lookup_inode(src_entry.ino())?;
-                src_inode.inner.write().set_parent_ino(target.ino)?;
+                src_inode.inner.upgradeable_read().upgrade().set_parent_ino(target.ino)?;
             }
             return Ok(());
         };
@@ -373,7 +392,11 @@ impl Inode {
         if src_entry.type_() == FileType::Dir {
             drop(write_guards);
             let src_inode = self.fs().lookup_inode(src_entry.ino())?;
-            src_inode.inner.write().set_parent_ino(target.ino)?;
+            src_inode
+                .inner
+                .upgradeable_read()
+                .upgrade()
+                .set_parent_ino(target.ino)?;
         }
 
         Ok(())
@@ -411,7 +434,7 @@ impl Inode {
     }
 
     pub fn write_link(&self, target: &str) -> Result<()> {
-        let mut inner = self.inner.write();
+        let mut inner = self.inner.upgradeable_read().upgrade();
         if inner.file_type() != FileType::Symlink {
             return Err(FsError::IsDir);
         }
@@ -430,7 +453,7 @@ impl Inode {
     }
 
     pub fn set_device_id(&self, device_id: u64) -> Result<()> {
-        let mut inner = self.inner.write();
+        let mut inner = self.inner.upgradeable_read().upgrade();
         let file_type = inner.file_type();
         if file_type != FileType::Block && file_type != FileType::Char {
             return Err(FsError::IsDir);
@@ -477,23 +500,19 @@ impl Inode {
     }
 
     pub fn write_at(&self, offset: usize, buf: &[u8]) -> Result<usize> {
-        let inner = self.inner.read();
+        let new_size = offset + buf.len();
+
+        let mut inner = self.inner.upgradeable_read().upgrade();
         if inner.file_type() != FileType::File {
             return Err(FsError::NotFile);
         }
 
-        let new_size = offset + buf.len();
         if new_size > inner.file_size() {
-            drop(inner);
-            let mut inner = self.inner.write();
-            // When we get the lock, the file size may be changed
-            if new_size > inner.file_size() {
-                inner.resize(new_size)?;
-            }
-            inner.write_bytes(offset, buf)?;
-        } else {
-            inner.write_bytes(offset, buf)?;
+            inner.resize(new_size)?;
         }
+        drop(inner);
+
+        self.inner.read().write_bytes(offset, buf)?;
 
         Ok(buf.len())
     }
@@ -508,7 +527,7 @@ impl Inode {
     }
 
     fn init(&self, dir_ino: u32) -> Result<()> {
-        let mut inner = self.inner.write();
+        let mut inner = self.inner.upgradeable_read().upgrade();
         match inner.file_type() {
             FileType::Dir => {
                 inner.init_dir(self.ino, dir_ino)?;
@@ -525,7 +544,7 @@ impl Inode {
             return Ok(());
         }
 
-        let mut inner = self.inner.write();
+        let mut inner = self.inner.upgradeable_read().upgrade();
         if !inner.desc.is_dirty() {
             return Ok(());
         }
@@ -540,7 +559,11 @@ impl Inode {
             }
         }
 
-        inner.indirect_blocks.write().evict_all()?;
+        inner
+            .indirect_blocks
+            .upgradeable_read()
+            .upgrade()
+            .evict_all()?;
         self.fs().sync_inode(self.ino, &inner.desc)?;
         inner.desc.clear_dirty();
         Ok(())
@@ -549,11 +572,17 @@ impl Inode {
     pub fn sync_all(&self) -> Result<()> {
         self.inner.read().sync_data_holes()?;
         self.sync_metadata()?;
+
+        // XXX: Should we sync the disk here?
+        // self.fs().block_device().sync()?;
         Ok(())
     }
 
     pub fn sync_data(&self) -> Result<()> {
         self.inner.read().sync_data_holes()?;
+
+        // XXX: Should we sync the disk here?
+        // self.fs().block_device().sync()?;
         Ok(())
     }
 }
@@ -574,7 +603,7 @@ impl Inode {
     pub fn ctime(&self) -> UnixTime;
 }
 
-#[inherit_methods(from = "self.inner.write()")]
+#[inherit_methods(from = "self.inner.upgradeable_read().upgrade()")]
 impl Inode {
     pub fn set_file_perm(&self, perm: FilePerm);
     pub fn set_uid(&self, uid: u32);
@@ -599,6 +628,7 @@ pub(crate) struct InodeInner {
     is_freed: bool,
     last_alloc_device_bid: Option<u32>,
     weak_self: Weak<Inode>,
+    pub(super) dentry_cache: RwLock<BTreeMap<usize, DirEntry>>,
 }
 
 impl InodeInner {
@@ -610,6 +640,7 @@ impl InodeInner {
             is_freed: false,
             last_alloc_device_bid: None,
             weak_self,
+            dentry_cache: RwLock::new(BTreeMap::new()),
         }
     }
 
@@ -747,7 +778,10 @@ impl InodeInner {
         self.fs()
             .block_device()
             .write_block(device_bid as Bid, block)?;
-        self.blocks_hole_desc.write().unset(bid as usize);
+        self.blocks_hole_desc
+            .upgradeable_read()
+            .upgrade()
+            .unset(bid as usize);
 
         Ok(())
     }
@@ -928,7 +962,10 @@ impl InodeInner {
                 return Err(FsError::NoDeviceSpace);
             }
             self.expand_blocks(old_blocks..new_blocks)?;
-            self.blocks_hole_desc.write().resize(new_blocks as usize);
+            self.blocks_hole_desc
+                .upgradeable_read()
+                .upgrade()
+                .resize(new_blocks as usize);
         }
 
         // Expands the size
@@ -1064,14 +1101,14 @@ impl InodeInner {
             BidPath::Indirect(idx) => {
                 let indirect_bid = self.desc.block_ptrs.indirect();
                 assert!(indirect_bid != 0);
-                let mut indirect_blocks = self.indirect_blocks.write();
+                let mut indirect_blocks = self.indirect_blocks.upgradeable_read().upgrade();
                 let indirect_block = indirect_blocks.find_mut(indirect_bid)?;
                 for (i, bid) in device_range.enumerate() {
                     indirect_block.write_bid(idx + i, &bid)?;
                 }
             }
             BidPath::DbIndirect(lvl1_idx, lvl2_idx) => {
-                let mut indirect_blocks = self.indirect_blocks.write();
+                let mut indirect_blocks = self.indirect_blocks.upgradeable_read().upgrade();
                 let lvl1_indirect_bid = {
                     let db_indirect_bid = self.desc.block_ptrs.db_indirect();
                     assert!(db_indirect_bid != 0);
@@ -1086,7 +1123,7 @@ impl InodeInner {
                 }
             }
             BidPath::TbIndirect(lvl1_idx, lvl2_idx, lvl3_idx) => {
-                let mut indirect_blocks = self.indirect_blocks.write();
+                let mut indirect_blocks = self.indirect_blocks.upgradeable_read().upgrade();
                 let lvl2_indirect_bid = {
                     let lvl1_indirect_bid = {
                         let tb_indirect_bid = self.desc.block_ptrs.tb_indirect();
@@ -1116,7 +1153,7 @@ impl InodeInner {
     fn set_indirect_bids(&mut self, bid: u32, indirect_bids: &[u32]) -> Result<()> {
         assert!((1..=3).contains(&indirect_bids.len()));
 
-        let mut indirect_blocks = self.indirect_blocks.write();
+        let mut indirect_blocks = self.indirect_blocks.upgradeable_read().upgrade();
         let bid_path = BidPath::from(bid);
         for indirect_bid in indirect_bids.iter() {
             let indirect_block = IndirectBlock::alloc()?;
@@ -1177,7 +1214,10 @@ impl InodeInner {
         // Shrinks block count if necessary
         if new_blocks < old_blocks {
             self.shrink_blocks(new_blocks..old_blocks);
-            self.blocks_hole_desc.write().resize(new_blocks as usize);
+            self.blocks_hole_desc
+                .upgradeable_read()
+                .upgrade()
+                .resize(new_blocks as usize);
         }
 
         // Shrinks the size
@@ -1252,7 +1292,10 @@ impl InodeInner {
                 }
 
                 self.desc.block_ptrs.set_indirect(0);
-                self.indirect_blocks.write().remove(indirect_bid);
+                self.indirect_blocks
+                    .upgradeable_read()
+                    .upgrade()
+                    .remove(indirect_bid);
                 self.fs()
                     .free_blocks(indirect_bid..indirect_bid + 1)
                     .unwrap();
@@ -1263,7 +1306,7 @@ impl InodeInner {
                     return Ok(());
                 }
 
-                let mut indirect_blocks = self.indirect_blocks.write();
+                let mut indirect_blocks = self.indirect_blocks.upgradeable_read().upgrade();
                 let lvl1_indirect_bid = {
                     let db_indirect_block = indirect_blocks.find(db_indirect_bid)?;
                     db_indirect_block.read_bid(lvl1_idx)?
@@ -1288,7 +1331,7 @@ impl InodeInner {
                     return Ok(());
                 }
 
-                let mut indirect_blocks = self.indirect_blocks.write();
+                let mut indirect_blocks = self.indirect_blocks.upgradeable_read().upgrade();
                 let lvl1_indirect_bid = {
                     let tb_indirect_block = indirect_blocks.find(tb_indirect_bid)?;
                     tb_indirect_block.read_bid(lvl1_idx)?
@@ -1349,7 +1392,7 @@ impl<'a> DeviceRangeReader<'a> {
         assert!(!range.is_empty());
 
         let mut reader = Self {
-            indirect_blocks: inode.indirect_blocks.write(),
+            indirect_blocks: inode.indirect_blocks.upgradeable_read().upgrade(),
             inode,
             range,
             indirect_block: None,
@@ -1817,7 +1860,7 @@ fn write_lock_multiple_inodes<'a>(inodes: Vec<&'a Inode>) -> Vec<RwLockWriteGuar
     inodes.sort_by(|a, b| a.1.ino.cmp(&b.1.ino));
     let mut guards: Vec<(usize, RwLockWriteGuard<'a, InodeInner>)> = inodes
         .into_iter()
-        .map(|(idx, inode)| (idx, inode.inner.write()))
+        .map(|(idx, inode)| (idx, inode.inner.upgradeable_read().upgrade()))
         .collect();
 
     // Resort the guards by the input index.

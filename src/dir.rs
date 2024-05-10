@@ -192,6 +192,11 @@ impl<'a> DirEntryReader<'a> {
 
     /// Reads one `DirEntry` from the current offset.
     pub fn read_entry(&mut self) -> Result<DirEntry> {
+        if let Some(entry) = self.inode.dentry_cache.read().get(&self.offset) {
+            self.offset += entry.record_len();
+            return Ok(entry.clone());
+        }
+
         let header = self.inode.read_val::<DirEntryHeader>(self.offset)?;
         if header.ino == 0 {
             return Err(FsError::EntryNotFound);
@@ -204,6 +209,13 @@ impl<'a> DirEntryReader<'a> {
             header,
             name: CStr256::from(name.as_slice()),
         };
+
+        self.inode
+            .dentry_cache
+            .upgradeable_read()
+            .upgrade()
+            .insert(self.offset, entry.clone());
+
         self.offset += entry.record_len();
 
         Ok(entry)
@@ -248,6 +260,13 @@ impl<'a> DirEntryWriter<'a> {
             self.offset + DirEntry::header_len(),
             entry.name().as_bytes(),
         )?;
+
+        self.inode
+            .dentry_cache
+            .upgradeable_read()
+            .upgrade()
+            .insert(self.offset, entry.clone());
+
         self.offset += entry.record_len();
         Ok(())
     }

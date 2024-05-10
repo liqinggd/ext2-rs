@@ -178,7 +178,10 @@ impl Ext2 {
             let block_group = &self.block_groups[block_group_idx];
             if let Some(inode_idx) = block_group.alloc_inode(is_dir) {
                 let ino = block_group_idx as u32 * self.inodes_per_group + inode_idx + 1;
-                self.super_block.write().dec_free_inodes();
+                self.super_block
+                    .upgradeable_read()
+                    .upgrade()
+                    .dec_free_inodes();
                 return Ok((block_group_idx, ino));
             }
             block_group_idx += 1;
@@ -193,7 +196,10 @@ impl Ext2 {
         let inode_idx = self.inode_idx(ino);
         // In order to prevent value underflow, it is necessary to increment
         // the free inode counter prior to freeing the inode.
-        self.super_block.write().inc_free_inodes();
+        self.super_block
+            .upgradeable_read()
+            .upgrade()
+            .inc_free_inodes();
         block_group.free_inode(inode_idx, is_dir);
         Ok(())
     }
@@ -216,7 +222,8 @@ impl Ext2 {
             let offset = block_group_idx * size_of::<GroupDescriptor>();
             (offset / BLOCK_SIZE, offset % BLOCK_SIZE)
         };
-        self.group_descriptors.write()[blk_idx].write_val(blk_offset, descriptor)?;
+        self.group_descriptors.upgradeable_read().upgrade()[blk_idx]
+            .write_val(blk_offset, descriptor)?;
         Ok(())
     }
 
@@ -273,7 +280,10 @@ impl Ext2 {
         }
 
         if let Some(range) = allocated_range.as_ref() {
-            self.super_block.write().dec_free_blocks(range.len() as u32);
+            self.super_block
+                .upgradeable_read()
+                .upgrade()
+                .dec_free_blocks(range.len() as u32);
         }
         allocated_range
     }
@@ -291,7 +301,8 @@ impl Ext2 {
             // In order to prevent value underflow, it is necessary to increment
             // the free block counter prior to freeing the block.
             self.super_block
-                .write()
+                .upgradeable_read()
+                .upgrade()
                 .inc_free_blocks(range_in_group.len() as u32);
             block_group.free_blocks(range_in_group.clone());
             current_range.start += range_in_group.len() as u32;
@@ -307,7 +318,7 @@ impl Ext2 {
             return Ok(());
         }
 
-        let mut super_block = self.super_block.write();
+        let mut super_block = self.super_block.upgradeable_read().upgrade();
         // Writes back the metadata of block groups
         for block_group in &self.block_groups {
             block_group.sync_metadata()?;
