@@ -628,7 +628,7 @@ pub(crate) struct InodeInner {
     is_freed: bool,
     last_alloc_device_bid: Option<u32>,
     weak_self: Weak<Inode>,
-    pub(super) dentry_cache: RwLock<BTreeMap<usize, DirEntry>>,
+    pub(super) dentry_cache: RwLock<BTreeMap<usize, Arc<DirEntry>>>,
 }
 
 impl InodeInner {
@@ -897,7 +897,7 @@ impl InodeInner {
         self.get_entry(name, offset).map(|(_, entry)| entry.ino())
     }
 
-    pub fn get_entry(&self, name: &str, offset: usize) -> Option<(usize, DirEntry)> {
+    pub fn get_entry(&self, name: &str, offset: usize) -> Option<(usize, Arc<DirEntry>)> {
         DirEntryReader::new(self, offset).find(|(_, entry)| entry.name() == name)
     }
 
@@ -931,9 +931,10 @@ impl InodeInner {
     }
 
     pub fn set_parent_ino(&mut self, parent_ino: u32) -> Result<()> {
-        let (offset, mut entry) = self.get_entry("..", 0).unwrap();
+        let (offset, entry) = self.get_entry("..", 0).unwrap();
+        let mut entry = (*entry).clone();
         entry.set_ino(parent_ino);
-        DirEntryWriter::new(self, offset).write_entry(&entry)?;
+        DirEntryWriter::new(self, offset).write_entry(entry)?;
         Ok(())
     }
 

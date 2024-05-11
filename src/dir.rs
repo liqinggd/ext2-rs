@@ -191,7 +191,7 @@ impl<'a> DirEntryReader<'a> {
     }
 
     /// Reads one `DirEntry` from the current offset.
-    pub fn read_entry(&mut self) -> Result<DirEntry> {
+    pub fn read_entry(&mut self) -> Result<Arc<DirEntry>> {
         if let Some(entry) = self.inode.dentry_cache.read().get(&self.offset) {
             self.offset += entry.record_len();
             return Ok(entry.clone());
@@ -205,10 +205,11 @@ impl<'a> DirEntryReader<'a> {
         let mut name = vec![0u8; header.name_len as _];
         self.inode
             .read_bytes(self.offset + DirEntry::header_len(), &mut name)?;
-        let entry = DirEntry {
+        let entry = Arc::new(DirEntry {
             header,
             name: CStr256::from(name.as_slice()),
-        };
+        });
+        let record_len = entry.record_len();
 
         self.inode
             .dentry_cache
@@ -216,14 +217,14 @@ impl<'a> DirEntryReader<'a> {
             .upgrade()
             .insert(self.offset, entry.clone());
 
-        self.offset += entry.record_len();
+        self.offset += record_len;
 
         Ok(entry)
     }
 }
 
 impl<'a> Iterator for DirEntryReader<'a> {
-    type Item = (usize, DirEntry);
+    type Item = (usize, Arc<DirEntry>);
 
     fn next(&mut self) -> Option<Self::Item> {
         let offset = self.offset;
@@ -254,20 +255,21 @@ impl<'a> DirEntryWriter<'a> {
     }
 
     /// Writes a `DirEntry` at the current offset.
-    pub fn write_entry(&mut self, entry: &DirEntry) -> Result<()> {
+    pub fn write_entry(&mut self, entry: DirEntry) -> Result<()> {
         self.inode.write_val(self.offset, entry.header())?;
         self.inode.write_bytes(
             self.offset + DirEntry::header_len(),
             entry.name().as_bytes(),
         )?;
+        let record_len = entry.record_len();
 
         self.inode
             .dentry_cache
             .upgradeable_read()
             .upgrade()
-            .insert(self.offset, entry.clone());
+            .insert(self.offset, Arc::new(entry));
 
-        self.offset += entry.record_len();
+        self.offset += record_len;
         Ok(())
     }
 
@@ -276,7 +278,7 @@ impl<'a> DirEntryWriter<'a> {
     /// If there is a gap between existing entries, inserts the new entry into the gap；
     /// If there is no available space, expands the size and appends the new entry at the end.
     pub fn append_entry(&mut self, mut new_entry: DirEntry) -> Result<()> {
-        let Some((offset, mut entry)) = DirEntryReader::new(self.inode, self.offset)
+        let Some((offset, entry)) = DirEntryReader::new(self.inode, self.offset)
             .find(|(_, entry)| entry.gap_len() >= new_entry.record_len())
         else {
             // Resize and append it at the new block.
@@ -285,31 +287,33 @@ impl<'a> DirEntryWriter<'a> {
             self.inode.resize(new_size)?;
             new_entry.set_record_len(BLOCK_SIZE);
             self.offset = old_size;
-            self.write_entry(&new_entry)?;
+            self.write_entry(new_entry)?;
             return Ok(());
         };
 
         // Write in the gap between existing entries.
         new_entry.set_record_len(entry.gap_len());
+        let mut entry = (*entry).clone();
         entry.set_record_len(entry.actual_len());
         self.offset = offset;
-        self.write_entry(&entry)?;
-        self.write_entry(&new_entry)?;
+        self.write_entry(entry)?;
+        self.write_entry(new_entry)?;
         Ok(())
     }
 
     /// Removes and returns an existing `DirEntry` indicated by `name`.
-    pub fn remove_entry(&mut self, name: &str) -> Result<DirEntry> {
+    pub fn remove_entry(&mut self, name: &str) -> Result<Arc<DirEntry>> {
         let self_entry_record_len = DirEntry::self_entry(0).record_len();
         let reader = DirEntryReader::new(self.inode, 0);
         let next_reader = DirEntryReader::new(self.inode, self_entry_record_len);
-        let Some(((pre_offset, mut pre_entry), (offset, entry))) = reader
+        let Some(((pre_offset, pre_entry), (offset, entry))) = reader
             .zip(next_reader)
             .find(|((_, _), (_, dir_entry))| dir_entry.name() == name)
         else {
             return Err(FsError::EntryNotFound);
         };
 
+        let mut pre_entry = (*pre_entry).clone();
         if DirEntryReader::new(self.inode, offset).next().is_none()
             && (pre_offset / BLOCK_SIZE) != (offset / BLOCK_SIZE)
         {
@@ -318,12 +322,12 @@ impl<'a> DirEntryWriter<'a> {
             self.inode.resize(new_size)?;
             pre_entry.set_record_len(new_size - pre_offset);
             self.offset = pre_offset;
-            self.write_entry(&pre_entry)?;
+            self.write_entry(pre_entry)?;
         } else {
             // Update the previous entry.
             pre_entry.set_record_len(pre_entry.record_len() + entry.record_len());
             self.offset = pre_offset;
-            self.write_entry(&pre_entry)?;
+            self.write_entry(pre_entry)?;
         }
 
         Ok(entry)
@@ -343,7 +347,7 @@ impl<'a> DirEntryWriter<'a> {
             // Just rename the entry.
             new_entry.set_record_len(entry.record_len());
             self.offset = offset;
-            self.write_entry(&new_entry)?;
+            self.write_entry(new_entry)?;
         } else {
             // Move to another position.
             self.remove_entry(old_name)?;
