@@ -11,7 +11,7 @@ default = ["libc"]
 sgx = ["sgx_types", "sgx_tstd", "sgx_trts", "sgx_libc"]
 
 [dependencies]
-rcore-fs = { path = "../sefs/rcore-fs" }
+rcore-fs = { path = "../../deps/sefs/rcore-fs" }
 pod = { git = "https://github.com/asterinas/pod", rev = "d7dba56" }
 inherit-methods-macro = { git = "https://github.com/asterinas/inherit-methods-macro", rev = "98f7e3e" }
 static_assertions = "1.1.0"
@@ -23,10 +23,10 @@ log = "0.4"
 lru = "=0.12.3"
 libc = { version = "0.2.147", optional = true }
 
-sgx_types = { path = "../rust-sgx-sdk/sgx_types", optional = true }
-sgx_tstd = { path = "../rust-sgx-sdk/sgx_tstd", optional = true, features = ["backtrace"] }
-sgx_trts = { path = "../rust-sgx-sdk/sgx_trts", optional = true }
-sgx_libc = { path = "../rust-sgx-sdk/sgx_libc", optional = true }
+sgx_types = { path = "../../deps/rust-sgx-sdk/sgx_types", optional = true }
+sgx_tstd = { path = "../../deps/rust-sgx-sdk/sgx_tstd", features = ["backtrace"], optional = true }
+sgx_trts = { path = "../../deps/rust-sgx-sdk/sgx_trts", optional = true }
+sgx_libc = { path = "../../deps/rust-sgx-sdk/sgx_libc", optional = true }
 
 [dev-dependencies]
 lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
