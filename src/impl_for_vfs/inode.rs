@@ -57,8 +57,8 @@ impl vfs::INode for Ext2Inode {
             blk_size,
             blocks: blocks as _,
             atime: vfs::Timespec::from(atime),
-            mtime: vfs::Timespec::from(atime),
-            ctime: vfs::Timespec::from(atime),
+            mtime: vfs::Timespec::from(mtime),
+            ctime: vfs::Timespec::from(ctime),
             type_: vfs::FileType::from(type_),
             mode,
             nlinks: nlinks as _,
@@ -159,6 +159,31 @@ impl vfs::INode for Ext2Inode {
 
     fn as_any_ref(&self) -> &dyn Any {
         self
+    }
+
+    fn fallocate(&self, _mode: &vfs::FallocateMode, _offset: usize, _len: usize) -> Result<()> {
+        let file_size = self.file_size();
+        let new_size = _offset + _len;
+        match _mode {
+            vfs::FallocateMode::Allocate(_) => {
+                if file_size < new_size {
+                    self.resize(new_size)
+                } else {
+                    Ok(())
+                }
+            }
+            vfs::FallocateMode::ZeroRange => self.write_at(_offset, &vec![0; _len]).map(|_| ()),
+            vfs::FallocateMode::ZeroRangeKeepSize => {
+                let len = file_size.min(new_size).saturating_sub(_offset);
+                if len > 0 {
+                    self.write_at(_offset, &vec![0; len]).map(|_| ())
+                } else {
+                    Ok(())
+                }
+            }
+            vfs::FallocateMode::PunchHoleKeepSize => Ok(()),
+            _ => Err(FsError::NotSupported),
+        }
     }
 }
 

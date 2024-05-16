@@ -199,6 +199,8 @@ impl Inode {
         };
 
         inode.inner.upgradeable_read().upgrade().dec_hard_links();
+
+        let _ = self.lookup_cache.upgradeable_read().upgrade().remove(name);
         Ok(())
     }
 
@@ -245,6 +247,8 @@ impl Inode {
         self_inner.remove_entry(name, 0)?;
         dir_inner.dec_hard_links();
         dir_inner.dec_hard_links(); // For "."
+
+        let _ = self.lookup_cache.upgradeable_read().upgrade().remove(name);
         Ok(())
     }
 
@@ -399,6 +403,11 @@ impl Inode {
                 .set_parent_ino(target.ino)?;
         }
 
+        let _ = self
+            .lookup_cache
+            .upgradeable_read()
+            .upgrade()
+            .remove(old_name);
         Ok(())
     }
 
@@ -500,19 +509,23 @@ impl Inode {
     }
 
     pub fn write_at(&self, offset: usize, buf: &[u8]) -> Result<usize> {
-        let new_size = offset + buf.len();
-
-        let mut inner = self.inner.upgradeable_read().upgrade();
+        let inner = self.inner.read();
         if inner.file_type() != FileType::File {
             return Err(FsError::NotFile);
         }
 
+        let new_size = offset + buf.len();
         if new_size > inner.file_size() {
-            inner.resize(new_size)?;
+            drop(inner);
+            let mut inner = self.inner.write();
+            // When we get the lock, the file size may be changed
+            if new_size > inner.file_size() {
+                inner.resize(new_size)?;
+            }
+            inner.write_bytes(offset, buf)?;
+        } else {
+            inner.write_bytes(offset, buf)?;
         }
-        drop(inner);
-
-        self.inner.read().write_bytes(offset, buf)?;
 
         Ok(buf.len())
     }
@@ -798,6 +811,7 @@ impl InodeInner {
             block_size_log2: BLOCK_SIZE_LOG2,
         };
 
+        // TODO: Batch read
         let mut buf_offset = 0;
         for range in iter {
             if range.is_full() {
