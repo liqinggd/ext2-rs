@@ -309,7 +309,7 @@ impl SuperBlock {
         super_block_bid as u32
     }
 
-    /// Returns the starting block id of the block group descripter table
+    /// Returns the starting block id of the block group descriptor table
     /// inside the block group pointed by `block_group_idx`.
     ///
     /// # Panic
@@ -518,7 +518,7 @@ pub(super) struct RawSuperBlock {
     pub prealloc_dir_blocks: u8,
     padding1: u16,
     ///
-    /// This fileds are for journaling support in Ext3.
+    /// This fields are for journaling support in Ext3.
     ///
     /// Uuid of journal superblock.
     pub journal_uuid: [u8; 16],

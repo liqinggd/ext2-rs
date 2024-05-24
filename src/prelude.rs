@@ -14,7 +14,7 @@ pub(crate) use core::{fmt::Debug, mem::size_of, ops::Range, time::Duration};
 cfg_if::cfg_if! {
     if #[cfg(feature = "sgx")] {
         pub(crate) use std::prelude::v1::*;
-        pub(crate) use std::sync::{Arc, Weak};
+        pub(crate) use std::sync::{Arc, Weak, SgxMutex as Mutex};
         pub(crate) use std::collections::{BTreeMap, HashMap};
         pub(crate) use spin::{RwLock, RwLockReadGuard, RwLockWriteGuard};
     } else {

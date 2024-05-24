@@ -3,6 +3,7 @@
 use core::ops::Deref;
 
 use crate::{
+    bio::BlockCache,
     block_group::{BlockGroup, GroupDescriptor},
     inode::{FilePerm, FileType, Inode, InodeDesc, RawInode},
     prelude::*,
@@ -33,6 +34,7 @@ impl Ext2 {
         block_device: Arc<dyn BlockDevice>,
         time_provider: Arc<dyn TimeProvider>,
     ) -> Result<Arc<Self>> {
+        let block_device = BlockCache::new(block_device);
         // Load the superblock
         // TODO: if the main superblock is corrupted, should we load the backup?
         let super_block = {
