@@ -47,6 +47,17 @@ impl BlocksHoleDesc {
         self.0.set(idx, true);
     }
 
+    /// Marks `num` blocks start at `idx` as holes.
+    ///
+    /// # Panic
+    ///
+    /// If the range is out of bounds, this method will panic.
+    pub fn setv(&mut self, idx: usize, num: usize) {
+        for i in idx..idx + num {
+            self.0.set(i, true);
+        }
+    }
+
     /// Unmarks the block `idx` as a hole.
     ///
     /// # Panic
@@ -54,5 +65,16 @@ impl BlocksHoleDesc {
     /// If the `idx` is out of bounds, this method will panic.
     pub fn unset(&mut self, idx: usize) {
         self.0.set(idx, false);
+    }
+
+    /// Unmarks `num` blocks start at `idx` as holes.
+    ///
+    /// # Panic
+    ///
+    /// If the range is out of bounds, this method will panic.
+    pub fn unsetv(&mut self, idx: usize, num: usize) {
+        for i in idx..idx + num {
+            self.0.set(i, false);
+        }
     }
 }

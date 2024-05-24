@@ -25,7 +25,6 @@ pub struct Inode {
     block_group_idx: usize,
     pub(super) inner: RwLock<InodeInner>,
     fs: Weak<Ext2>,
-    lookup_cache: RwLock<HashMap<String, Arc<Inode>>>,
 }
 
 impl Inode {
@@ -40,7 +39,6 @@ impl Inode {
             block_group_idx,
             inner: RwLock::new(InodeInner::new(desc, weak_self.clone(), fs.clone())),
             fs,
-            lookup_cache: RwLock::new(HashMap::new()),
         })
     }
 
@@ -118,10 +116,6 @@ impl Inode {
             return Err(FsError::NameTooLong);
         }
 
-        if let Some(inode) = self.lookup_cache.read().get(name) {
-            return Ok(inode.clone());
-        }
-
         let ino = {
             let inner = self.inner.read();
             if inner.file_type() != FileType::Dir {
@@ -134,13 +128,7 @@ impl Inode {
             ino
         };
 
-        let inode = self.fs().lookup_inode(ino)?;
-
-        self.lookup_cache
-            .upgradeable_read()
-            .upgrade()
-            .insert(name.to_string(), inode.clone());
-        Ok(inode)
+        self.fs().lookup_inode(ino)
     }
 
     pub fn link(&self, inode: &Inode, name: &str) -> Result<()> {
@@ -199,8 +187,6 @@ impl Inode {
         };
 
         inode.inner.upgradeable_read().upgrade().dec_hard_links();
-
-        let _ = self.lookup_cache.upgradeable_read().upgrade().remove(name);
         Ok(())
     }
 
@@ -247,8 +233,6 @@ impl Inode {
         self_inner.remove_entry(name, 0)?;
         dir_inner.dec_hard_links();
         dir_inner.dec_hard_links(); // For "."
-
-        let _ = self.lookup_cache.upgradeable_read().upgrade().remove(name);
         Ok(())
     }
 
@@ -402,12 +386,6 @@ impl Inode {
                 .upgrade()
                 .set_parent_ino(target.ino)?;
         }
-
-        let _ = self
-            .lookup_cache
-            .upgradeable_read()
-            .upgrade()
-            .remove(old_name);
         Ok(())
     }
 
@@ -782,6 +760,31 @@ impl InodeInner {
         Ok(())
     }
 
+    pub fn read_blocks(&self, bid: u32, mut blocks: &mut [&mut [u8]]) -> Result<()> {
+        let nblocks = blocks.len();
+        if bid + nblocks as u32 > self.desc.blocks_count() {
+            return Err(FsError::InvalidParam);
+        }
+
+        for dev_range in DeviceRangeReader::new(self, bid..bid + nblocks as u32)? {
+            let start_bid = dev_range.start as Bid;
+            let range_len = dev_range.len();
+            self.fs()
+                .block_device()
+                .read_blocks(start_bid, &mut blocks[..range_len])?;
+
+            blocks = &mut blocks[range_len..];
+        }
+
+        let blocks_hole_desc = self.blocks_hole_desc.read();
+        for bid in bid..bid + nblocks as u32 {
+            if blocks_hole_desc.is_hole(bid as usize) {
+                blocks[bid as usize].fill(0);
+            }
+        }
+        Ok(())
+    }
+
     pub fn write_block(&self, bid: u32, block: &[u8]) -> Result<()> {
         if bid >= self.desc.blocks_count() {
             return Err(FsError::InvalidParam);
@@ -799,10 +802,47 @@ impl InodeInner {
         Ok(())
     }
 
+    pub fn write_blocks(&self, bid: u32, mut blocks: &[&[u8]]) -> Result<()> {
+        let nblocks = blocks.len();
+        if bid + nblocks as u32 > self.desc.blocks_count() {
+            return Err(FsError::InvalidParam);
+        }
+
+        for dev_range in DeviceRangeReader::new(self, bid..bid + nblocks as u32)? {
+            let start_bid = dev_range.start as Bid;
+            let range_len = dev_range.len();
+            self.fs()
+                .block_device()
+                .write_blocks(start_bid, &blocks[..range_len])?;
+
+            blocks = &blocks[range_len..];
+        }
+
+        self.blocks_hole_desc
+            .upgradeable_read()
+            .upgrade()
+            .unsetv(bid as _, nblocks);
+        Ok(())
+    }
+
     pub fn read_bytes(&self, offset: usize, buf: &mut [u8]) -> Result<()> {
         let max_offset = offset.checked_add(buf.len()).ok_or(FsError::InvalidParam)?;
         if max_offset > self.file_size() {
             return Err(FsError::InvalidParam);
+        }
+
+        let buf_len = buf.len();
+        if buf_len > BLOCK_SIZE && offset % BLOCK_SIZE == 0 && buf_len % BLOCK_SIZE == 0 {
+            let mut bufs = Vec::with_capacity(buf_len / BLOCK_SIZE);
+            for i in 0..buf_len / BLOCK_SIZE {
+                unsafe {
+                    bufs.push(core::slice::from_raw_parts_mut(
+                        (&mut buf[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE]).as_mut_ptr(),
+                        BLOCK_SIZE,
+                    ));
+                }
+            }
+            return self.read_blocks((offset / BLOCK_SIZE) as _, &mut bufs);
         }
 
         let iter = BlockIter {
@@ -835,6 +875,21 @@ impl InodeInner {
         let max_offset = offset.checked_add(buf.len()).ok_or(FsError::InvalidParam)?;
         if max_offset > self.file_size() {
             return Err(FsError::InvalidParam);
+        }
+
+        let buf_len = buf.len();
+        if buf_len > BLOCK_SIZE && offset % BLOCK_SIZE == 0 && buf_len % BLOCK_SIZE == 0 {
+            let buf_nblocks = buf_len / BLOCK_SIZE;
+            let mut bufs = Vec::with_capacity(buf_nblocks);
+            for i in 0..buf_nblocks {
+                unsafe {
+                    bufs.push(core::slice::from_raw_parts(
+                        (&buf[i * BLOCK_SIZE..(i + 1) * BLOCK_SIZE]).as_ptr(),
+                        BLOCK_SIZE,
+                    ));
+                }
+            }
+            return self.write_blocks((offset / BLOCK_SIZE) as _, &bufs);
         }
 
         let iter = BlockIter {
