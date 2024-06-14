@@ -652,6 +652,8 @@ impl InodeInner {
         if new_size > old_size {
             self.expand(new_size)?;
         } else {
+            // XXX: Should we fill zero to the gap?
+            // self.write_bytes(new_size, &vec![0; old_size - new_size])?;
             self.shrink(new_size);
         }
         Ok(())

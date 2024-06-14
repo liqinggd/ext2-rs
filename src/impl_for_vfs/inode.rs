@@ -164,16 +164,17 @@ impl vfs::INode for Ext2Inode {
     fn fallocate(&self, _mode: &vfs::FallocateMode, _offset: usize, _len: usize) -> Result<()> {
         let file_size = self.file_size();
         let new_size = _offset + _len;
+        // TODO: Complete the implementation below
         match _mode {
-            vfs::FallocateMode::Allocate(_) => {
-                if file_size < new_size {
+            vfs::FallocateMode::Allocate(flags) => {
+                if !flags.contains(vfs::AllocFlags::KEEP_SIZE) && file_size < new_size {
                     self.resize(new_size)
                 } else {
                     Ok(())
                 }
             }
             vfs::FallocateMode::ZeroRange => self.write_at(_offset, &vec![0; _len]).map(|_| ()),
-            vfs::FallocateMode::ZeroRangeKeepSize => {
+            vfs::FallocateMode::ZeroRangeKeepSize | vfs::FallocateMode::PunchHoleKeepSize => {
                 let len = file_size.min(new_size).saturating_sub(_offset);
                 if len > 0 {
                     self.write_at(_offset, &vec![0; len]).map(|_| ())
@@ -181,7 +182,6 @@ impl vfs::INode for Ext2Inode {
                     Ok(())
                 }
             }
-            vfs::FallocateMode::PunchHoleKeepSize => Ok(()),
             _ => Err(FsError::NotSupported),
         }
     }
