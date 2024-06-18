@@ -10,7 +10,7 @@ use crate::{
     fs::Ext2,
     indirect_cache::{IndirectBlock, IndirectCache},
     prelude::*,
-    utils::{Dirty, UnixTime},
+    utils::{AlignExt, Dirty, UnixTime},
 };
 
 /// Max length of file name.
@@ -652,9 +652,7 @@ impl InodeInner {
         if new_size > old_size {
             self.expand(new_size)?;
         } else {
-            // XXX: Should we fill zero to the gap?
-            // self.write_bytes(new_size, &vec![0; old_size - new_size])?;
-            self.shrink(new_size);
+            self.shrink(new_size)?;
         }
         Ok(())
     }
@@ -1279,7 +1277,7 @@ impl InodeInner {
     ///
     /// After the reduction, the size will be shrinked to `new_size`,
     /// which may result in an decreased block count.
-    fn shrink(&mut self, new_size: usize) {
+    fn shrink(&mut self, new_size: usize) -> Result<()> {
         let new_blocks = self.desc.size_to_blocks(new_size);
         let old_blocks = self.desc.blocks_count();
 
@@ -1292,8 +1290,19 @@ impl InodeInner {
                 .resize(new_blocks as usize);
         }
 
+        // Fill the gap between the new size and the next block boundry (or the old size)
+        // if the new size is not block-aligned.
+        let old_size = self.desc.size;
+        if old_size > new_size && new_size % BLOCK_SIZE > 0 {
+            let gap_size = old_size.min(new_size.align_up(BLOCK_SIZE)) - new_size;
+            if gap_size > 0 {
+                self.write_bytes(new_size, &vec![0; gap_size])?;
+            }
+        }
+
         // Shrinks the size
         self.desc.size = new_size;
+        Ok(())
     }
 
     /// Shrinks inode blocks.
