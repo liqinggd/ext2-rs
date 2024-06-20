@@ -56,7 +56,11 @@ impl Inode {
 
     pub fn resize(&self, new_size: usize) -> Result<()> {
         let mut inner = self.inner.upgradeable_read().upgrade();
-        if inner.file_type() != FileType::File {
+        let file_type = inner.file_type();
+        if file_type != FileType::File
+            && file_type != FileType::Symlink
+            && file_type != FileType::Socket
+        {
             return Err(FsError::NotFile);
         }
         if new_size == inner.file_size() {
@@ -462,7 +466,8 @@ impl Inode {
 
     pub fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize> {
         let inner = self.inner.read();
-        if inner.file_type() != FileType::File {
+        let file_type = inner.file_type();
+        if file_type != FileType::File && file_type != FileType::Socket {
             return Err(FsError::NotFile);
         }
 
@@ -488,7 +493,8 @@ impl Inode {
 
     pub fn write_at(&self, offset: usize, buf: &[u8]) -> Result<usize> {
         let inner = self.inner.read();
-        if inner.file_type() != FileType::File {
+        let file_type = inner.file_type();
+        if file_type != FileType::File && file_type != FileType::Socket {
             return Err(FsError::NotFile);
         }
 
@@ -760,26 +766,28 @@ impl InodeInner {
         Ok(())
     }
 
-    pub fn read_blocks(&self, bid: u32, mut blocks: &mut [&mut [u8]]) -> Result<()> {
+    pub fn read_blocks(&self, bid: u32, blocks: &mut [&mut [u8]]) -> Result<()> {
         let nblocks = blocks.len();
         if bid + nblocks as u32 > self.desc.blocks_count() {
             return Err(FsError::InvalidParam);
         }
 
+        let mut blocks_offset = 0;
         for dev_range in DeviceRangeReader::new(self, bid..bid + nblocks as u32)? {
             let start_bid = dev_range.start as Bid;
             let range_len = dev_range.len();
-            self.fs()
-                .block_device()
-                .read_blocks(start_bid, &mut blocks[..range_len])?;
+            self.fs().block_device().read_blocks(
+                start_bid,
+                &mut blocks[blocks_offset..blocks_offset + range_len],
+            )?;
 
-            blocks = &mut blocks[range_len..];
+            blocks_offset += range_len;
         }
 
         let blocks_hole_desc = self.blocks_hole_desc.read();
-        for bid in bid..bid + nblocks as u32 {
+        for (nth, bid) in (bid..bid + nblocks as u32).enumerate() {
             if blocks_hole_desc.is_hole(bid as usize) {
-                blocks[bid as usize].fill(0);
+                blocks[nth].fill(0);
             }
         }
         Ok(())
